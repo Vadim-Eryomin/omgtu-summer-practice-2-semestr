@@ -48,15 +48,13 @@ class DefiniteIntegral
     public static double Solve(double a, double b, Func<double, double> function, double step, int threadsnumber)
     {
         double result = 0.0;
-        bool success = false;
         result += (function.Invoke(a) + function.Invoke(b)) / 2;
+        Task[] tasks = new Task[threadsnumber];
 
-        Barrier bar = new Barrier(threadsnumber, (b) => success = true);
         double interval = (b - a) / threadsnumber;
-
         for (int th = 0; th < threadsnumber; th++) {
             int k = th;
-            Task.Factory.StartNew(() => {
+            tasks[k] = Task.Factory.StartNew(() => {
                 double subResult = 0.0;
 
                 double start = a + interval * k;
@@ -68,11 +66,10 @@ class DefiniteIntegral
                 }
 
                 result += subResult;
-                bar.SignalAndWait();
             });
         }
 
-        while(!success);
+        Task.WaitAll(tasks);
         return result * step;
     }
 }
@@ -87,7 +84,109 @@ var X = (double x) => x;
 var SIN = (double x) => Math.Sin(x);
 
 Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, X, 1e-4, 2), 1e-4);
-
 Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, SIN, 1e-5, 8), 1e-4);
-
 Assert.Equal(50, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
+
+#!markdown
+
+Заметим, что погрешность для формулы трапеций выглядит как  ![формула погрешности](image.png). В таком случае, зная, что 
+(sin (x))'' = -sin (x), а максимальное значение -sin(x) = 1, то формула превращается в E=16.6h<sup>2</sup>, где h - шаг
+
+Очевидно, что при уже при h=1e-2: E=0.00166>0.0001, а при h=1e-3: E=0.0000166<0.0001, но на практике накапливается достаточно большая ошибка при работе с вещественными числами
+
+#!csharp
+
+Assert.Equal(0, DefiniteIntegral.Solve(-100, 100, SIN, 1e-3, 1), 1e-4);
+
+#!markdown
+
+При h=1e-4 таких проблем не возникает => это и есть искомое значение шага
+
+#!csharp
+
+Assert.Equal(0, DefiniteIntegral.Solve(-100, 100, SIN, 1e-4, 1), 1e-4);
+
+#!csharp
+
+//
+// Вычисление определенного интеграла
+// Реализация однопоточного вычисления интеграла
+//
+class DefiniteIntegralOneThread
+{
+    //
+    // a, b - границы отрезка, на котором происходит вычисление опредленного интеграла
+    // function - функция, для которой вычисляется определнный интеграл
+    // step - размер одного шага разбиения
+    // threadsNumber - число потоков, которые используются для вычислений
+    //
+    public static double Solve(double a, double b, Func<double, double> function, double step)
+    {
+        double result = 0.0;
+        result += (function.Invoke(a) + function.Invoke(b)) / 2;
+
+        int steps = (int) Math.Round((b - a) / step);
+        for (int i = 1; i < steps; i++) {
+            result += function.Invoke(a + i * step);
+        }   
+
+        return result * step;
+    }
+}
+
+#!csharp
+
+#r "nuget:ScottPlot, 5.0.36"
+using System.Diagnostics;
+using Microsoft.DotNet.Interactive.Formatting;
+
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), HtmlFormatter.MimeType);
+
+int maxThreadNumber = 100;
+int callNumber = 500;
+
+int[] millisecondsPerManyCalls = new int[maxThreadNumber];
+int[] numberOfThreads = new int[maxThreadNumber];
+
+for(int threadNumber = 0; threadNumber < maxThreadNumber; threadNumber++) {
+    numberOfThreads[threadNumber] = threadNumber + 1;
+    Console.Write(threadNumber);
+    Stopwatch watch = new Stopwatch();
+    for (int call = 0; call < callNumber; call++) {
+        watch.Start();
+        if (threadNumber == 0) {
+            DefiniteIntegralOneThread.Solve(-100, 100, SIN, 1e-4);
+        }
+        else {
+            DefiniteIntegral.Solve(-100, 100, SIN, 1e-4, threadNumber + 1);
+        }
+        watch.Stop();
+        
+    }
+    millisecondsPerManyCalls[threadNumber] = (int) watch.ElapsedMilliseconds;
+}
+
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(millisecondsPerManyCalls.Select(e => e / callNumber).ToArray(), numberOfThreads);
+
+int best = millisecondsPerManyCalls.Min();
+Console.WriteLine(best);
+int bestThreadCount = 0;
+Console.WriteLine(String.Join(" ", millisecondsPerManyCalls.Select((e, i) => $"{i}пот - {e}")));
+for (int i = 1; i < maxThreadNumber; i++){
+    if (millisecondsPerManyCalls[i] == best) { 
+        bestThreadCount = i;
+        break;
+    }   
+}
+    
+Console.WriteLine($"1 поток - {millisecondsPerManyCalls[0] / callNumber} - 100%");
+Console.WriteLine($"{bestThreadCount + 1} потоков - {millisecondsPerManyCalls[bestThreadCount] / callNumber} - {Math.Round(((double)millisecondsPerManyCalls[bestThreadCount]) / ((double)millisecondsPerManyCalls[0]) * 100, 2)}%");
+Console.WriteLine("Шаг деления для интеграла - 1e-4");
+
+plt
+
+#!markdown
+
+Оптимальное количество потоков - от раза к разу - около 20-30
+Прирост скорости - 3-4 раза (26-38% времени от однопоточного)
