@@ -35,6 +35,8 @@
 //
 // Вычисление определенного интеграла
 //
+using System.Threading;
+using System.Threading.Tasks;
 class DefiniteIntegral
 {
     //
@@ -45,8 +47,33 @@ class DefiniteIntegral
     //
     public static double Solve(double a, double b, Func<double, double> function, double step, int threadsnumber)
     {
-        // отсюда надо начинать реализацию задачи
-        return 0.0;
+        double result = 0.0;
+        bool success = false;
+        result += (function.Invoke(a) + function.Invoke(b)) / 2;
+
+        Barrier bar = new Barrier(threadsnumber, (b) => success = true);
+        double interval = (b - a) / threadsnumber;
+
+        for (int th = 0; th < threadsnumber; th++) {
+            int k = th;
+            Task.Factory.StartNew(() => {
+                double subResult = 0.0;
+
+                double start = a + interval * k;
+                double end = a + interval * (k + 1);
+                int steps = (int) Math.Round((end - start) / step);
+
+                for (int i = k == 0 ? 1 : 0; i < (k == threadsnumber - 1 ? steps + 1 : steps); i++) {
+                    subResult += function.Invoke(start + i * step);
+                }
+
+                result += subResult;
+                bar.SignalAndWait();
+            });
+        }
+
+        while(!success);
+        return result * step;
     }
 }
 
@@ -63,4 +90,4 @@ Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, X, 1e-4, 2), 1e-4);
 
 Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, SIN, 1e-5, 8), 1e-4);
 
-Assert.Equal(10, DefiniteIntegral.Solve(0, 5, X, 1e-6, 8), 1e-5);
+Assert.Equal(50, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
