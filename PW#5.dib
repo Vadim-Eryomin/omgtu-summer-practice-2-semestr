@@ -60,7 +60,83 @@ using System.Collections.Concurrent;
 var queue1 = new BlockingCollection<Message>(2); //очередь первого потока
 var queue2 = new BlockingCollection<Message>(2); //очередь второго потока
 
-// Здесь писать решение
+SemaphoreSlim queue1HasSem = new SemaphoreSlim(0, 1);
+SemaphoreSlim queue2HasSem = new SemaphoreSlim(0, 1);
+
+SemaphoreSlim queue1BusySem = new SemaphoreSlim(1, 1);
+SemaphoreSlim queue2BusySem = new SemaphoreSlim(1, 1);
+
+
+Task first = Task.Factory.StartNew(() => {
+    int handledMessages = 0;
+    while (handledMessages < 100) {
+        // обработать сообщение
+        // дождаться наличия 
+        queue1HasSem.Wait();
+
+        // получить доступ 
+        queue1BusySem.Wait();
+        // обработать
+        queue1.Take().Handle();
+        handledMessages++;
+        // вернуть доступ
+        queue1BusySem.Release();
+
+        // отправить ответ
+        // получить доступ
+        queue2BusySem.Wait();
+        // отправить сообщение 
+        queue2.Add(new Message());
+        // вернуть доступ
+        queue2BusySem.Release();
+        // сигнализировать о сообщении
+        queue2HasSem.Release();
+    }
+});
+
+Task second = Task.Factory.StartNew(() => {
+    int handledMessages = 0;
+    while (handledMessages < 100) {
+        // обработать сообщение
+        // дождаться наличия 
+        queue2HasSem.Wait();
+
+        // получить доступ 
+        queue2BusySem.Wait();
+        // обработать
+        queue2.Take().Handle();
+        
+        handledMessages++;
+        // вернуть доступ
+        queue2BusySem.Release();
+
+        // этот поток получает вторым, поэтому следит 
+        // за количеством полученных сообщений
+        if (handledMessages == 100) break;
+        // отправить ответ
+        // получить доступ
+        queue1BusySem.Wait();
+        // отправить сообщение 
+        queue1.Add(new Message());
+        // вернуть доступ
+        queue1BusySem.Release();
+        // сигнализировать о сообщении
+        queue1HasSem.Release();
+    }
+});
+
+// отправить первое сообщение
+// получить доступ
+queue1BusySem.Wait();
+// отправить сообщение 
+queue1.Add(new Message());
+// вернуть доступ
+queue1BusySem.Release();
+// сигнализировать о сообщении
+queue1HasSem.Release();
+
+// дождаться окончания работы программы
+Task.WaitAll(new Task[] {first, second});
 
 #!csharp
 
