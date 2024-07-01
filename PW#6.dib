@@ -1,0 +1,219 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"languageName":"csharp","name":"csharp"}]}}
+
+#!markdown
+
+# Практическая работа №6. Изучение производительности потоко-безопасных очередей.
+
+**Цель:** Определить лучшую потоко-безопасную коллекцию для выполнения интенсивной обработки входящих сообщений.
+
+**Результаты:** После выполнения работы Вы сможете:
+1. Назвать оптимальную коллекцию для обработки большого количества сообщений.
+2. Изучите примтив синхронизации Условная переманная.
+
+
+**Материалы для самостоятельного изучения**.
+1. [Потоко-безопасные коллекции](https://learn.microsoft.com/en-us/dotnet/standard/collections/thread-safe/)
+2. Условные переменные Глава 5 п.5.1. книги Г. Эндрюс Основы многопоточного, параллельного и распределенного программирования
+3. [Одна из реализаций условных переменных на .Net](https://learn.microsoft.com/ru-ru/dotnet/api/system.threading.manualresetevent?view=net-8.0)
+
+## Задание.
+Исслдеовать производительность BlockingCollection и ConcurrentQueue в сравнении с непотокоабезопасной очередью.
+
+Для каждой потоко-безопасной очереди необходимо реализовать 2 потока: один записывает объект в очередь, а другой - читает объект из очереди.
+Для непотокобезопасной очереди реализовать два цикла - записи миллиона объектов в очередь и чтение миллиона объектов из очереди.
+
+Необходимо определить два промежутка времени:
+- время за которое поток или цикл обработает миллион объектов
+- время, необходимое на запись и чтение миллиона объектов из очреди.
+
+Сделать десять замеров по каждой коллекции. Все замеры показать на графике.
+
+Записать в ноутбуке вывод - какая и потоко-безопасных коллекций эффективнее. И выразить в процентах - скорость самой быстрой поток-безопасной коллекции по сравнению с обычной очредью.
+
+**Указание**.
+1. Необходимо исключить из замеров время, необходимое для запуска и остановки потоков, то есть посчитать чистое время, необходимое для обработки объектов.
+Для этого следует использовать условные события, которые позволят убедиться, что оба потока запустились и готовы читать и писать объекты и только потом запускать таймер.
+2. Для итогового вывода сравнивать усредненные значения.
+
+#!csharp
+
+using System.Collections.Concurrent;
+using System.Threading;
+using System;
+using System.Diagnostics;
+
+class Message {
+    public int data;
+    
+    public Message() {
+        data = Random.Shared.Next();
+    }
+}
+
+#!csharp
+
+int[] blockedTimeElapsed = new int[10];
+int[] blockedTimeElapsedRead = new int[10];
+int[] blockedTimeElapsedWrite = new int[10];
+int[] queueTimeElapsed = new int[10];
+int[] queueTimeElapsedRead = new int[10];
+int[] queueTimeElapsedWrite = new int[10];
+int[] collectionElapsed = new int[10];
+int[] collectionElapsedRead = new int[10];
+int[] collectionElapsedWrite = new int[10];
+int[] labels = new int[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+
+
+for (int i = 0; i < 10; i++) {
+    Stopwatch blockingWatch = new Stopwatch();
+    Stopwatch blockingWatchRead = new Stopwatch();
+    Stopwatch blockingWatchWrite = new Stopwatch();
+
+    ManualResetEvent manualResetBlocking = new ManualResetEvent(false);
+    ManualResetEvent readerReadyBlocking = new ManualResetEvent(false);
+    ManualResetEvent writerReadyBlocking = new ManualResetEvent(false);
+    BlockingCollection<Message> messageCollection = new BlockingCollection<Message>();
+
+    Task blockingCollectionWriter = Task.Run(() => {
+        writerReadyBlocking.Set();
+        manualResetBlocking.WaitOne();
+        blockingWatchWrite.Start();
+        for (int i = 0; i < 1_000_000; i++)
+            messageCollection.Add(new Message());
+        blockingWatchWrite.Stop();
+        blockedTimeElapsedWrite[i] = (int) blockingWatchWrite.ElapsedMilliseconds;
+    });
+
+    Task blockingCollectionReader = Task.Run(() => {
+        readerReadyBlocking.Set();
+        manualResetBlocking.WaitOne();
+        blockingWatchRead.Start();
+        for (int i = 0; i < 1_000_000; i++)
+            messageCollection.Take();
+        blockingWatchRead.Stop();
+        blockedTimeElapsedRead[i] = (int) blockingWatchRead.ElapsedMilliseconds;
+    });
+
+    readerReadyBlocking.WaitOne();
+    writerReadyBlocking.WaitOne();
+    manualResetBlocking.Set();
+
+    blockingWatch.Start();
+    Task.WaitAll(new Task[] {blockingCollectionWriter, blockingCollectionReader});
+    blockingWatch.Stop();
+    blockedTimeElapsed[i] = (int) blockingWatch.ElapsedMilliseconds;
+} 
+
+Console.WriteLine("BlockingCollection: " + String.Join(" ", blockedTimeElapsed));
+Console.WriteLine("BlockingCollection Read Only: " + String.Join(" ", blockedTimeElapsedRead));
+Console.WriteLine("BlockingCollection Write Only: " + String.Join(" ", blockedTimeElapsedWrite));
+Console.WriteLine("Average: " + blockedTimeElapsed.Average());
+Console.WriteLine();
+
+for (int i = 0; i < 10; i++) {
+    Stopwatch queueWatch = new Stopwatch();
+    Stopwatch queueWatchRead = new Stopwatch();
+    Stopwatch queueWatchWrite = new Stopwatch();
+
+    ManualResetEvent manualResetBlocking = new ManualResetEvent(false);
+    ManualResetEvent readerReadyBlocking = new ManualResetEvent(false);
+    ManualResetEvent writerReadyBlocking = new ManualResetEvent(false);
+    ConcurrentQueue<Message> messageCollection = new ConcurrentQueue<Message>();
+
+    Task concQueueWriter = Task.Run(() => {
+        writerReadyBlocking.Set();
+        manualResetBlocking.WaitOne();
+        queueWatchWrite.Start();
+        for (int i = 0; i < 1_000_000; i++)
+            messageCollection.Enqueue(new Message());
+        queueWatchWrite.Stop();
+        queueTimeElapsedWrite[i] = (int) queueWatchWrite.ElapsedMilliseconds;
+    });
+
+    Task concQueueReader = Task.Run(() => {
+        readerReadyBlocking.Set();
+        manualResetBlocking.WaitOne();
+        Message message = null;
+        queueWatchRead.Start();
+        for (int i = 0; i < 1_000_000; i++)
+            while (!messageCollection.TryDequeue(out message));
+        queueWatchRead.Stop();
+        queueTimeElapsedRead[i] = (int) queueWatchRead.ElapsedMilliseconds;
+    });
+
+    readerReadyBlocking.WaitOne();
+    writerReadyBlocking.WaitOne();
+    manualResetBlocking.Set();
+
+    queueWatch.Start();
+    Task.WaitAll(new Task[] {concQueueWriter, concQueueReader});
+    queueWatch.Stop();
+    queueTimeElapsed[i] = (int) queueWatch.ElapsedMilliseconds;
+} 
+
+Console.WriteLine("ConcurrentQueue: " + String.Join(" ", queueTimeElapsed));
+Console.WriteLine("ConcurrentQueue Read Only: " + String.Join(" ", queueTimeElapsedRead));
+Console.WriteLine("ConcurrentQueue Write Only: " + String.Join(" ", queueTimeElapsedWrite));
+Console.WriteLine("Average: " + queueTimeElapsed.Average());
+Console.WriteLine();
+
+for (int j = 0; j < 10; j++) {
+    Stopwatch queueWatch = new Stopwatch();
+    Stopwatch queueWatchRead = new Stopwatch();
+    Stopwatch queueWatchWrite = new Stopwatch();
+
+    Queue<Message> messagesQueue = new Queue<Message>();
+    queueWatch.Start();
+    queueWatchWrite.Start();
+    for (int i = 0; i < 1_000_000; i++)
+        messagesQueue.Enqueue(new Message());
+    queueWatchWrite.Stop();
+    queueWatchRead.Start();
+    for (int i = 0; i < 1_000_000; i++)
+        messagesQueue.Dequeue();
+    queueWatchRead.Stop();
+    queueWatch.Stop();
+    collectionElapsed[j] = (int) queueWatch.ElapsedMilliseconds;
+    collectionElapsedRead[j] = (int) queueWatchRead.ElapsedMilliseconds;
+    collectionElapsedWrite[j] = (int) queueWatchWrite.ElapsedMilliseconds;
+}
+
+Console.WriteLine("Queue: " + String.Join(" ", collectionElapsed));
+Console.WriteLine("Queue Read Only: " + String.Join(" ", collectionElapsedRead));
+Console.WriteLine("Queue Write Only: " + String.Join(" ", collectionElapsedWrite));
+Console.WriteLine("Average: " + collectionElapsed.Average());
+Console.WriteLine();
+
+#!csharp
+
+#r "nuget:ScottPlot, 5.0.36"
+using System.Diagnostics;
+using Microsoft.DotNet.Interactive.Formatting;
+
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), HtmlFormatter.MimeType);
+
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(labels, blockedTimeElapsed);
+plt.Add.Scatter(labels, queueTimeElapsed);
+plt.Add.Scatter(labels, collectionElapsed);
+plt
+
+#!markdown
+
+синий - BlockingCollection <br> жёлтый - ConcurrentQueue <br> зелёный - Queue
+
+#!markdown
+
+## Вывод
+
+#!csharp
+
+double avgQueue = collectionElapsed.Average();
+double avgConQueue = queueTimeElapsed.Average();
+double avgBlockedColl = blockedTimeElapsed.Average();
+
+Console.WriteLine($"Непотокобезопасная очередь: {avgQueue} ms - 100%");
+Console.WriteLine($"Потокобезопасная очередь: {avgConQueue} ms - {Math.Round(avgConQueue/avgQueue*100.0, 2)}% - самая быстрая потокобезопасная");
+Console.WriteLine($"Блокирующая коллекция: {avgBlockedColl} ms - {Math.Round(avgBlockedColl/avgQueue*100.0, 2)}%");
