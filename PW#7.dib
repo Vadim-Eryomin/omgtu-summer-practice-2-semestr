@@ -38,3 +38,159 @@ ServerThread может менять свое поведение для обра
 Отсутствие Команд в очереди потока не должно требовать значительных затрат процессорного времени. Значительными считаются затраты, которые зависят от времени простоя потока.
 
 Написать проверку, которая гарантирует правильное выполнение команд HardStop и SoftStop.
+
+#!csharp
+
+using System;
+using System.Threading;
+using System.Collections.Concurrent;
+
+class ServerThread {
+    public ConcurrentQueue<ICommand> commands;
+    public bool SoftStopFlag {get; set;}
+    public bool HardStopFlag {get; set;}
+    Thread mainThread;
+
+    public ServerThread() {
+        commands = new ConcurrentQueue<ICommand>();
+        SoftStopFlag = false;
+        HardStopFlag = false;
+
+        mainThread = new Thread(() => {
+            while (true) {
+                ICommand command;
+                // если есть команда - выполнить
+                if (commands.TryDequeue(out command)) {
+                    try {
+                        command.Execute();
+                    } catch (Exception e) {
+                        Console.WriteLine("***************");
+                        Console.WriteLine("Произошла ошибка!");
+                        Console.WriteLine(e.Message);
+                        Console.WriteLine("Продолжаю работу, игнорируя косячную команду!");
+                        Console.WriteLine("***************");
+                    }
+                }
+                // если нет - можно софт стопнуться
+                else if (SoftStopFlag) {
+                    Console.WriteLine("Получена команда мягкой остановки, останавливаюсь");
+                    break;
+                }
+
+                // в любом случае хард стоп
+                if (HardStopFlag) {
+                    Console.WriteLine("Получена команда жёсткой остановки, останавливаюсь");
+                    break;
+                }
+            }
+        });
+
+        mainThread.Start();
+
+    }
+
+    public int GetThreadId() {
+        return mainThread.ManagedThreadId;
+    }
+
+    public void AddCommand(ICommand c) {
+        commands.Enqueue(c);
+    }
+
+    public void SetSoftStop() {
+        SoftStopFlag = true;
+    }
+
+    public void SetHardStop() {
+        HardStopFlag = true;
+    }
+
+}
+
+#!csharp
+
+class HardStop: ICommand {
+    ServerThread th;
+
+    public HardStop(ServerThread th) {
+        this.th = th;
+    }
+
+    public void Execute() {
+        if (th.GetThreadId() != Thread.CurrentThread.ManagedThreadId) {
+            throw new Exception($"Wrong thread Id: need {th.GetThreadId()}, got {Thread.CurrentThread.ManagedThreadId}");
+        }
+
+        this.th.SetHardStop();
+    }
+}
+
+#!csharp
+
+class SoftStop: ICommand {
+    ServerThread th;
+
+    public SoftStop(ServerThread th) {
+        this.th = th;
+    }
+
+    public void Execute() {
+        if (th.GetThreadId() != Thread.CurrentThread.ManagedThreadId) {
+            throw new Exception($"Wrong thread Id: need {th.GetThreadId()}, got {Thread.CurrentThread.ManagedThreadId}");
+        }
+
+        this.th.SetSoftStop();
+    }
+}
+
+#!csharp
+
+class PrintCommand: ICommand {
+    string msg;
+
+    public PrintCommand(string msg) {
+        this.msg = msg;
+    }
+
+    public void Execute() {
+        Console.WriteLine(msg);
+    }
+}
+
+#!csharp
+
+// Хард стоп отрабатывает неправильно, поскольку потоки разные
+ServerThread thread = new ServerThread();
+ServerThread th1 = new ServerThread();
+
+thread.AddCommand(new PrintCommand($"Выполнен 1"));
+thread.AddCommand(new HardStop(th1));
+thread.AddCommand(new PrintCommand($"Выполнен 2"));
+
+#!csharp
+
+// Софт стоп отрабатывает неправильно, поскольку потоки разные
+ServerThread thread = new ServerThread();
+ServerThread th1 = new ServerThread();
+
+thread.AddCommand(new PrintCommand($"Выполнен 1"));
+thread.AddCommand(new SoftStop(th1));
+thread.AddCommand(new PrintCommand($"Выполнен 2"));
+
+#!csharp
+
+// Хард стоп отрабатывает правильно
+ServerThread thread = new ServerThread();
+
+thread.AddCommand(new PrintCommand("Выполнен 1"));
+thread.AddCommand(new HardStop(thread));
+thread.AddCommand(new PrintCommand("Выполнен 2"));
+
+#!csharp
+
+// Софт стоп отрабатывает правильно
+ServerThread thread = new ServerThread();
+
+thread.AddCommand(new PrintCommand("Выполнен 1"));
+thread.AddCommand(new SoftStop(thread));
+thread.AddCommand(new PrintCommand("Выполнен 2"));
