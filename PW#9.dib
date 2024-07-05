@@ -20,21 +20,170 @@
 
 #!csharp
 
-interface ICommand
+public interface ICommand
 {
     void Execute();
 }
 
+public interface IScheduler
+{
+    bool HasCommand();
+    ICommand Select();
+    void Add(ICommand cmd);
+}
 
-public class TestCommand(int id) : ICommand
+#!csharp
+
+using System;
+using System.Threading;
+using System.Collections.Concurrent;
+
+#!csharp
+
+public class RoundRobinScheduler: IScheduler {
+    readonly ConcurrentQueue<ICommand> commands = new ConcurrentQueue<ICommand>();
+    public bool HasCommand() => !commands.IsEmpty;
+    public void Add(ICommand cmd) => commands.Enqueue(cmd);
+
+    public ICommand Select() {
+        ICommand command = null; 
+        if (HasCommand()){
+            commands.TryDequeue(out command);
+        }
+
+        return command;
+    }
+}
+
+#!csharp
+
+class ServerThread {
+    public static int executeCounter;
+    public ConcurrentQueue<ICommand> commands = new ConcurrentQueue<ICommand>();
+    IScheduler scheduler = new RoundRobinScheduler(); 
+    public bool SoftStopFlag {get; set;} = false;
+    public bool HardStopFlag {get; set;} = false;
+    Thread mainThread;
+
+    public ServerThread() {
+        mainThread = new Thread(() => {
+            while (true) {
+                ICommand command;
+                if (commands.TryDequeue(out command)) {
+                    scheduler.Add(command);
+                }
+
+                // если в планировщике есть задача, то ее нужно выполнить
+                ICommand com = scheduler.Select();
+                if (com != null) {
+                    try {
+                        com.Execute();
+                    } catch (Exception e) {
+                        Console.WriteLine($"*************** \n Произошла ошибка! {e.Message} Продолжаю работу, игнорируя косячную команду! \n ***************");
+                    }
+                }
+                // если такой задачи нет, но есть флаг мягкой остановки и нет задач - стоп
+                else if (SoftStopFlag && !scheduler.HasCommand()) {
+                    Console.WriteLine("Получена команда мягкой остановки, останавливаюсь");
+                    break;
+                }
+                else {
+                    Thread.Sleep(20);
+                }
+
+                if (HardStopFlag) {
+                    Console.WriteLine("Получена команда жёсткой остановки, останавливаюсь");
+                    break;
+                }
+            }
+        });
+
+        mainThread.Start();
+    }
+
+    public int GetThreadId() => mainThread.ManagedThreadId;
+    public Thread GetThread() => mainThread;
+    public void SetSoftStop() => SoftStopFlag = true;
+    public void SetHardStop() => HardStopFlag = true;
+    public IScheduler GetScheduler() => scheduler;
+    public void AddCommand(ICommand c) => commands.Enqueue(c);
+
+
+}
+
+#!csharp
+
+class HardStop: ICommand {
+    ServerThread th;
+    public HardStop(ServerThread th) {
+        this.th = th;
+    }
+
+    public void Execute() {
+        if (th.GetThreadId() != Thread.CurrentThread.ManagedThreadId) {
+            throw new Exception($"Wrong thread Id: need {th.GetThreadId()}, got {Thread.CurrentThread.ManagedThreadId}");
+        }
+
+        this.th.SetHardStop();
+    }
+}
+
+class SoftStop: ICommand {
+    ServerThread th;
+    public SoftStop(ServerThread th) {
+        this.th = th;
+    }
+
+    public void Execute() {
+        if (th.GetThreadId() != Thread.CurrentThread.ManagedThreadId) {
+            throw new Exception($"Wrong thread Id: need {th.GetThreadId()}, got {Thread.CurrentThread.ManagedThreadId}");
+        }
+
+        this.th.SetSoftStop();
+    }
+}
+
+class PrintCommand: ICommand {
+    string msg;
+    public void Execute() => Console.WriteLine(msg);
+
+    public PrintCommand(string msg) {
+        this.msg = msg;
+    }
+}
+
+public class TestCommand(int id, IScheduler scheduler) : ICommand
 {
     int counter = 0;
 
     public void Execute()
     {
         Console.WriteLine($"Поток {id} вызов {++counter}");
+        Interlocked.Increment(ref ServerThread.executeCounter);
+        if (counter < 3)
+            scheduler.Add(this);
     }
 }
+
+#!csharp
+
+ServerThread thread = new ServerThread();
+ServerThread.executeCounter = 0;
+
+thread.AddCommand(new TestCommand(1, thread.GetScheduler()));
+thread.AddCommand(new TestCommand(2, thread.GetScheduler()));
+thread.AddCommand(new TestCommand(3, thread.GetScheduler()));
+thread.AddCommand(new TestCommand(4, thread.GetScheduler()));
+thread.AddCommand(new TestCommand(5, thread.GetScheduler()));
+
+while (true) 
+    if (ServerThread.executeCounter == 15) {
+        thread.AddCommand(new HardStop(thread));
+        break;
+    }
+
+
+thread.GetThread().Join();
 
 #!markdown
 
