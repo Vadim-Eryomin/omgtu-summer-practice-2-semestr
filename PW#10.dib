@@ -36,3 +36,238 @@
 1. [Паттерн Сообщение](https://www.enterpriseintegrationpatterns.com/patterns/messaging/Message.html)
 2. [Паттерн Роутер - весь раздел про Роутеры](https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageRoutingIntro.html)
 3. [Обмен сообщеними](https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageConstructionIntro.html)
+
+#!csharp
+
+public class Message { 
+    string data;
+    int commandId; 
+
+    public Message(int commandId, string data) {
+        this.data = data;
+        this.commandId = commandId;
+    }
+
+    public int GetCommandId() => commandId;
+    public string GetData() => data;
+}
+
+public interface ICommand
+{
+    void Execute();
+    void HandleMessage(Message message);
+}
+
+public interface IScheduler
+{
+    bool HasCommand();
+    ICommand Select();
+    void Add(ICommand cmd);
+}
+
+#!csharp
+
+using System;
+using System.Threading;
+using System.Collections.Concurrent;
+
+#!csharp
+
+public class RoundRobinScheduler: IScheduler {
+    readonly ConcurrentQueue<ICommand> commands = new ConcurrentQueue<ICommand>();
+    public bool HasCommand() => !commands.IsEmpty;
+    public void Add(ICommand cmd) => commands.Enqueue(cmd);
+
+    public ICommand Select() {
+        ICommand command = null; 
+        if (HasCommand()){
+            commands.TryDequeue(out command);
+        }
+
+        return command;
+    }
+}
+
+#!csharp
+
+public class Router: ICommand { 
+    object locker = new();
+    ConcurrentDictionary<int, ICommand> commands = new ConcurrentDictionary<int, ICommand>();
+    ConcurrentQueue<Message> messagesToSend = new ConcurrentQueue<Message>();
+
+    public void Execute() {
+        Message msg;
+        while (messagesToSend.TryDequeue(out msg)) {
+            ICommand cmd;
+            if (commands.TryGetValue(msg.GetCommandId(), out cmd)) {
+                cmd.HandleMessage(msg);
+            }
+            else {
+                throw new Exception("Несуществующая команда!");
+            }
+        }
+    }
+
+    public void AddHandler(int id, ICommand command) => commands.TryAdd(id, command);
+    public void HandleMessage(Message message) {
+        messagesToSend.Enqueue(message);
+    }
+
+    public void RemoveHandler(int id) {
+        
+        ICommand cmd;
+        commands.TryRemove(id, out cmd);
+    }
+
+}
+
+#!csharp
+
+class ServerThread {
+    public static int executeCounter;
+    public ConcurrentQueue<ICommand> commands = new ConcurrentQueue<ICommand>();
+    IScheduler scheduler = new RoundRobinScheduler(); 
+    public bool SoftStopFlag {get; set;} = false;
+    public bool HardStopFlag {get; set;} = false;
+    Thread mainThread;
+
+    public ServerThread() {
+        mainThread = new Thread(() => {
+            while (true) {
+                ICommand command;
+                if (commands.TryDequeue(out command)) {
+                    scheduler.Add(command);
+                }
+
+                // если в планировщике есть задача, то ее нужно выполнить
+                ICommand com = scheduler.Select();
+                if (com != null) {
+                    try {
+                        com.Execute();
+                    } catch (Exception e) {
+                        Console.WriteLine($"*************** \nПроизошла ошибка! {e.Message} Продолжаю работу, игнорируя косячную команду! \n***************");
+                    }
+                }
+                // если такой задачи нет, но есть флаг мягкой остановки и нет задач - стоп
+                else if (SoftStopFlag && !scheduler.HasCommand()) {
+                    Console.WriteLine("Получена команда мягкой остановки, останавливаюсь");
+                    break;
+                }
+                else {
+                    Thread.Sleep(20);
+                }
+
+                if (HardStopFlag) {
+                    Console.WriteLine("Получена команда жёсткой остановки, останавливаюсь");
+                    break;
+                }
+            }
+        });
+
+        mainThread.Start();
+    }
+
+    public int GetThreadId() => mainThread.ManagedThreadId;
+    public Thread GetThread() => mainThread;
+    public void SetSoftStop() => SoftStopFlag = true;
+    public void SetHardStop() => HardStopFlag = true;
+    public IScheduler GetScheduler() => scheduler;
+    public void AddCommand(ICommand c) => commands.Enqueue(c);
+
+
+}
+
+#!csharp
+
+class HardStop: ICommand {
+    ServerThread th;
+    public HardStop(ServerThread th) {
+        this.th = th;
+    }
+
+    public void Execute() {
+        if (th.GetThreadId() != Thread.CurrentThread.ManagedThreadId) {
+            throw new Exception($"Wrong thread Id: need {th.GetThreadId()}, got {Thread.CurrentThread.ManagedThreadId}");
+        }
+
+        this.th.SetHardStop();
+    }
+
+    public void HandleMessage(Message message) {
+        // nothing to do...
+    }
+}
+
+class SoftStop: ICommand {
+    ServerThread th;
+    public SoftStop(ServerThread th) {
+        this.th = th;
+    }
+
+    public void Execute() {
+        if (th.GetThreadId() != Thread.CurrentThread.ManagedThreadId) {
+            throw new Exception($"Wrong thread Id: need {th.GetThreadId()}, got {Thread.CurrentThread.ManagedThreadId}");
+        }
+
+        this.th.SetSoftStop();
+    }
+
+    public void HandleMessage(Message message) {
+        // nothing to do...
+    }
+}
+
+public class LongRunCommand(int id, IScheduler scheduler) : ICommand
+{
+    Queue<Message> messages = new Queue<Message>();
+    int counter = 0;
+    Router router;
+
+    public void Execute()
+    {
+        Message msg;
+        while(messages.TryDequeue(out msg)) {
+            Console.WriteLine($"{msg.GetData()}");
+        }
+
+        Console.WriteLine($"Поток {id} вызов {++counter}");
+        Interlocked.Increment(ref ServerThread.executeCounter);
+        if (counter < 8)
+            scheduler.Add(this);
+        else if(router != null) {
+            router.RemoveHandler(id);
+        }
+
+    }
+
+    public void HandleMessage(Message message) {
+        messages.Enqueue(message);
+    }
+
+    public void SetRouter(Router router) {
+        this.router = router;
+        router.AddHandler(id, this);
+    }
+}
+
+#!csharp
+
+ServerThread thread = new ServerThread();
+
+LongRunCommand cmd1 = new LongRunCommand(1, thread.GetScheduler());
+LongRunCommand cmd2 = new LongRunCommand(2, thread.GetScheduler());
+Router router = new Router();
+cmd1.SetRouter(router);
+cmd2.SetRouter(router);
+
+thread.AddCommand(cmd1);
+thread.AddCommand(cmd2);
+thread.AddCommand(router);
+router.HandleMessage(new Message(1, "Привет, 1ая команда!"));
+router.HandleMessage(new Message(2, "Привет, 2ая команда!"));
+router.HandleMessage(new Message(-1, "Привет, несуществующая команда"));
+
+Thread.Sleep(1000);
+thread.AddCommand(new SoftStop(thread));
+
+thread.GetThread().Join();
